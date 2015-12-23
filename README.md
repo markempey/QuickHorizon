@@ -12,6 +12,7 @@ export dot info to CSV file with coordinates, elevation ad azimuth
 
 
 Bugs:
+
 -Field azimuth is set to -1 initially, it must be et to a value from 0-360 in order to be visible
 -Rounds dot coordinates when in large zoom extent (they APPEAR shifted, ignore this)
 -Must have field azimuth and azimuth wheel set inorder to export dot information
