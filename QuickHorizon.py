@@ -151,12 +151,17 @@ class AzimuthDialog(tkSimpleDialog.Dialog):
 
     def apply(self):
 
+        X = self.e1.get()
+        Y = self.e2.get()
         A = self.e3.get()
+
+        self.center = (int(X), int(Y))
         self.azimuth = int(A)
+        self.result = True
 
 
 ####################################################################
-# Main functions
+# Main 
 ####################################################################
 class LoadImageApp:
 
@@ -170,6 +175,9 @@ class LoadImageApp:
     raw_image = None       
     zoomed_image = None    
     showGrid = False
+    field_azimuth = 0      # Define an angle of field azimuth from anchor (in degrees)
+    field_azimuth_coords = (0,0)   # Store field Azimuth coordinates (end point)
+    anchor = (0,0)         # Store the orange point coordinate
 
 
     # list of digitized dots.  Columns contain X, Y, Elevation, Az
@@ -182,7 +190,7 @@ class LoadImageApp:
     def __init__(self,root,image_file):
 
         self.parent = root
-        self.frame = Frame(root,bg='white')
+        self.frame = Frame(root,bg='black')
         self.imageFile = image_file
 
         
@@ -195,7 +203,7 @@ class LoadImageApp:
             self.mux[n] = round(self.mux[n+1] * 1.5, 5)
 
         # Create canvas 
-        self.canvas = Canvas(self.frame,width=800,height=600,bg='white')
+        self.canvas = Canvas(self.frame,width=800,height=600,bg='gray')
 
         # Create the image on canvas
         if image_file:
@@ -236,9 +244,8 @@ class LoadImageApp:
         drawmenu.add_command(label="Digitize", command=self.dot)
         drawmenu.add_command(label="Display Info", command=self.show_dots)
         drawmenu.add_command(label="Delete", command=self.select)
-        
-        #drawmenu.add_command(label="Draw Line", command=self.line)
         menubar.add_cascade(label="Tools", menu=drawmenu)
+        
 
         gridmenu = Menu(menubar, tearoff=0)
         gridmenu.add_command(label="Show Azimuth Wheel", command=self.show_grid)
@@ -304,7 +311,7 @@ class LoadImageApp:
             canvas.delete("all")
             canvas.create_image(0,0,image=self.p_img, anchor="nw")
 
-            # Find default center of image and radius
+            # Find center of image and radius
             self.center = (int(width/2), int(height/2))
             self.radius = int(math.sqrt(self.center[0] * self.center[0] + self.center[1] * self.center[1]))
             self.field_azimuth = -1
@@ -352,18 +359,41 @@ class LoadImageApp:
             pX,pY = self.to_window((rX,rY))
             my_canvas.create_line(wX,wY,pX,pY,fill="red",tag="grid")
 
-    def drawAzimuth(self, my_canvas, center, radius, azimuth):
-     
-        if azimuth >= 0 and azimuth <= 360:
+    def drawAzimuth(self, my_canvas, center, radius, azimuth, anchor):
+
+        logging.debug('drawAzimuth() -> center = %d, %d, radius = %d, azimuth = %d, anchor = %d, %d', center[0], center[1], radius, azimuth, anchor[0], anchor[1])
+
+        # Find the angle for the anchor point from a standard ciricle (1,0) 0 degrees
+        anchor_angle = self.find_angle(center,(center[0]+radius, center[1]),anchor)
+        adjusted_azimuth = anchor_angle + azimuth
+        #logging.debug('adjusted azimuth = %d, %d, %d', adjusted_azimuth, anchor_angle, azimuth)
+
+        if adjusted_azimuth > 360:
+            adjusted_azimuth = adjusted_azimuth - 360
+
+        # Field Azimuth angle is in reference to the anchor point (in orange)
+        if adjusted_azimuth >= 0 and adjusted_azimuth <= 360:
             my_canvas.delete("azimuth")
+
+            old_anchor = my_canvas.find_withtag("anchor")
+            if old_anchor:
+                my_canvas.delete(old_anchor)
+
+            ax, ay = self.to_window(anchor)
+
+            my_canvas.create_oval(ax-2,ay-2,ax+2,ay+2,tag = "anchor", fill="orange")
 
             (wX,wY) = self.to_window(center)
 
-            # Draw field azimuth
-            rX = center[0] + int(radius * math.cos(math.radians(azimuth)))
-            rY = center[1] + int(radius * math.sin(math.radians(azimuth)))
+            # Draw the field azimuth in reference to the anchor point
+            rX = center[0] + int(radius * math.cos(math.radians(adjusted_azimuth)))
+            rY = center[1] + int(radius * math.sin(math.radians(adjusted_azimuth)))
+
+            # Store the field azimuth coordinates (end point) so that it can be used later to calculate dot azimuth
+            self.field_azimuth_coords = (rX, rY)
+
             pX,pY = self.to_window((rX,rY))
-            my_canvas.create_line(wX,wY,pX,pY, tag="azimuth", fill="green", width=2)
+            my_canvas.create_line(wX,wY,pX,pY, tag="azimuth", fill="green", width=3)
 
 
     def scale_image(self):
@@ -384,7 +414,7 @@ class LoadImageApp:
         tmp = self.zoomed_image.crop((x,y,x+w,y+h))
 
         self.p_img = ImageTk.PhotoImage(tmp)
-        my_canvas.config(bg="white")
+        my_canvas.config(bg="gray50")
         my_canvas.create_image(0,0,image=self.p_img, anchor="nw")
 
         # Draw  saved dots
@@ -510,12 +540,7 @@ class LoadImageApp:
     def define_azimuth(self):
 
         if self.raw_image and self.showGrid:
-
-            d = AzimuthDialog(self.parent, title="Azimuth Preferences", center=self.center, azimuth=self.field_azimuth)
-            if d:
-                self.field_azimuth = d.azimuth
-                self.drawAzimuth(self.canvas, self.center, self.radius, self.field_azimuth)
-                self.azimuth_calculation(self.center, self.radius, self.field_azimuth)
+            self.tool = "azimuth"
 
     def dot(self):
         if self.raw_image:
@@ -551,7 +576,7 @@ class LoadImageApp:
 
         
 
-        # Zoom image and update viewport based on mouse position
+        
         if self.raw_image:
             (x,y) = self.to_raw((event.x,event.y))
 
@@ -570,27 +595,27 @@ class LoadImageApp:
 
     def b1down(self,event):
 
-        
+        logging.debug('b1down() at (%d,%d)', event.x, event.y)
         if self.raw_image:
             if self.tool is "dot":
 
                 item = event.widget.create_oval(event.x-2,event.y-2,event.x+2,event.y+2,fill="blue")
 
-                # Save dots 
+                
                 raw = self.to_raw((event.x,event.y))
                 event.widget.itemconfig(item, tags=("dot", str(raw[0]), str(raw[1])))
 
-                # Only calcualte horizon elevation and azimuth if field azimuth and grid are defined! 
+               
                 if self.showGrid and self.field_azimuth >= 0 and self.field_azimuth <= 360:
 
                     rX = self.center[0] + int(self.radius * math.cos(math.radians(self.field_azimuth)))
                     rY = self.center[1] + int(self.radius * math.sin(math.radians(self.field_azimuth)))
 
-                    azimuth = self.find_angle(self.center, (rX,rY), (raw[0], raw[1]))
+                    azimuth = self.find_angle(self.center, self.field_azimuth_coords, (raw[0], raw[1]))
 
-                    
+                   
                     dot_radius = math.sqrt(math.pow(raw[0]-self.center[0],2)+math.pow(raw[1]-self.center[1],2))
-                    
+                    logging.debug('Dot (%d,%d) has radius %f', raw[0], raw[1], dot_radius)
                     horizon = self.find_horizon(dot_radius, self.radius)
                     logging.info('Dot (%d,%d) has Horizon Elevation = %f, Azimuth = %f', raw[0], raw[1], horizon, azimuth)
 
@@ -599,51 +624,70 @@ class LoadImageApp:
 
                 else:
                     self.dots.append(raw)
-            else:
+
+            else:   
+
+                
                 self.select_X, self.select_Y = event.x, event.y
-                self.button_1 = "down"
+                self.button_1 = "down"       
+                                             
+
+                if self.showGrid and self.tool is "azimuth":
+
+                    old_anchor = event.widget.find_withtag("anchor")
+                    if old_anchor:
+                        event.widget.delete(old_anchor)
+
+                    item = event.widget.create_oval(event.x-2,event.y-2,event.x+2,event.y+2,fill="orange")
+
+                    # save the anchor 
+                    self.anchor = self.to_raw((event.x,event.y))
+                    event.widget.itemconfig(item, tags=("anchor"))
+
+                    logging.debug('Button down, drawing azimuth line with 0 degree')
+                    self.drawAzimuth(self.canvas, self.center, self.radius, 0, self.anchor)
 
     def b1up(self,event):
 
-        
+        logging.debug('b1up()-> tool = %s at (%d, %d)', self.tool, event.x, event.y)
         if not self.raw_image:
             return
 
         self.button_1 = "up"
-        self.xold = None            
+        self.xold = None           
         self.yold = None
 
-        # Delete the selection 
+        
         if self.tool is "select":
             items = event.widget.find_enclosed(self.select_X, self.select_Y, event.x, event.y)
 
-            # Delete the rectangle 
+            
             rect = event.widget.find_withtag("selection_rectangle")
             if rect:
                 event.widget.delete(rect)
 
-            found_dots = {}     # Stores dot coords as value
+            found_dots = {}     
 
             for i in items:
 
-                # Change colour of the selected dots to red
+                # Change the color of the selected dots 
                 event.widget.itemconfig(i,fill="red")
 
                 tags = event.widget.gettags(i)
-                
+                logging.debug('Selected Item-> %d with tags %s, %s, %s', i, tags[0], tags[1], tags[2])
 
                 if tags[0] == "dot":
-                    found_dots[i] = (int(tags[1]),int(tags[2]))       
+                    found_dots[i] = (int(tags[1]),int(tags[2]))      
 
-            # Dialog to confirm deletion
+           
             if found_dots:
-                result = tkMessageBox.askokcancel("Confirm deletion?","Press OK to delete selected dots")
+                result = tkMessageBox.askokcancel("Confirm deletion?","Press OK to delete selected dot(s)!")
 
                 
                 if result:
-                    # Delete the selected dots and remove from list
+                    # Delete the selected dots on the canvas, and remove it from list
                     for i,coords in found_dots.items():
-                        
+                        logging.debug('Removing dot %d with coords: %d, %d', i, coords[0], coords[1])
 
                         rows = len(self.dots)
                         for row in xrange(rows):
@@ -655,17 +699,20 @@ class LoadImageApp:
 
                         event.widget.delete(i)
 
-                else: # Option to cancel deletion 
-                    logging.info('Deletion cancelled')
+                else: 
+                    logging.info('Dot deletion cancelled!')
 
-                    # Change colour of dot back to blue if cancelled
+                    
                     for i in found_dots.keys():
                         event.widget.itemconfig(i,fill="blue")
 
-    # Handles mouse events
+        elif self.tool is "azimuth":
+            self.azimuth_calculation(self.center, self.radius, self.field_azimuth_coords)
+
+    # Handles mouse 
     def motion(self,event):
 
-        # Only do anything if left button is clicked 
+        # Only do anything if mouse button (left button) is clicked first.
         if self.raw_image and self.button_1 == "down":
             if self.xold is not None and self.yold is not None:
 
@@ -673,15 +720,24 @@ class LoadImageApp:
                 if self.tool is "line":
                     
                     event.widget.create_line(self.xold,self.yold,event.x,event.y,smooth=TRUE,fill="blue",width=5)
+
+                elif self.tool is "azimuth":   # Defining Field Azimuth
+
                     
-                    # Panning
-                elif self.tool is "move":     
-                    
-                        self.viewport = (self.viewport[0] - (event.x - self.xold), self.viewport[1] - (event.y - self.yold))
-                        self.display_region(self.canvas)
+                    if self.showGrid:
+                        
+                        zoomed_center = self.to_window(self.center)
+                        zoomed_anchor = self.to_window(self.anchor)
+
+                        self.field_azimuth = self.find_angle(zoomed_center, zoomed_anchor, (event.x,event.y))
+                        self.drawAzimuth(self.canvas, self.center, self.radius, self.field_azimuth, self.anchor)
+
+                elif self.tool is "move":     # Panning
+                    self.viewport = (self.viewport[0] - (event.x - self.xold), self.viewport[1] - (event.y - self.yold))
+                    self.display_region(self.canvas)
 
                 elif self.tool is "select":
-                    # Draw a dotted rectangle for deletion
+                    # Draw a dotted rectangle to show the area selected
                     rect = event.widget.find_withtag("selection_rectangle")
                     if rect:
                         event.widget.delete(rect)
@@ -690,43 +746,35 @@ class LoadImageApp:
             self.xold = event.x
             self.yold = event.y
 
-        # Status bar will show coordinates
+        # update the status bar with x,y values, status bar always shows "RAW" coordinates
         (rX,rY) = self.to_raw((event.x,event.y))
-        str = "(", rX , ",", rY, ")"
-        self.status.config(text=str)
+        output = "Cursor = %d, %d" % (rX,rY)
+        if self.field_azimuth:
+            output += "      Field Azimuth = %d" %(360 - self.field_azimuth)
+        self.status.config(text=output)
 
     def resize_window(self, event):
         if self.zoomed_image:
             self.display_region(self.canvas)
 
     def azimuth_calculation(self, center, radius, azimuth):
+        new_dots = []
 
-        
+        rows = len(self.dots)
+        for row in xrange(rows):
+            dot = self.dots.pop()
 
-        if azimuth >= 0 and azimuth <= 360:
+            azimuth = self.find_angle(center, azimuth_coords, (dot[0], dot[1]))
 
-            rX = center[0] + int(radius * math.cos(math.radians(azimuth)))
-            rY = center[1] + int(radius * math.sin(math.radians(azimuth)))
+            # (x-center.x)2 + (y-center.y)2 = r2
+            dot_radius = math.sqrt(math.pow(dot[0]-center[0],2)+math.pow(dot[1]-center[1],2))
+            horizon = self.find_horizon(dot_radius, radius)
+            logging.info('Dot (%d,%d) has Horizon Elevation = %f, Azimuth = %f', dot[0], dot[1], horizon, azimuth)
 
-            # Calculate horizon elevation and azimuth for each point, add to list
-            new_dots = []
+            new_dot = [dot[0], dot[1], round(horizon,5), round(azimuth,5)]
+            new_dots.append(new_dot)
 
-            rows = len(self.dots)
-            for row in xrange(rows):
-                dot = self.dots.pop()
-
-                azimuth = self.find_angle(center, (rX,rY), (dot[0], dot[1]))
-
-                
-                dot_radius = math.sqrt(math.pow(dot[0]-center[0],2)+math.pow(dot[1]-center[1],2))
-                
-                horizon = self.find_horizon(dot_radius, radius)
-                
-
-                new_dot = [dot[0], dot[1], round(horizon,5), round(azimuth,5)]
-                new_dots.append(new_dot)
-
-            self.dots = new_dots
+        self.dots = new_dots
 
     def find_angle(self, C, P2, P3):
 
@@ -743,10 +791,10 @@ class LoadImageApp:
         # Enter total field of view of Sunex camera (based on lens/camera model)
         camera = 185   
 
-        # Calculate Horizon Elevation
+        # Adjust horizon elevation using calibration polynomial
         elev = (camera/2) - ((dot_radius/grid_radius) * (camera/2))
         
-        # Adjust horizon elevation using calibration polynomial
+        # Calculate Horizon Elevation
         return ((-0.00003 * (elev * elev)) + (1.0317 * (elev)) - 2.4902)
 
 # Main Program 
